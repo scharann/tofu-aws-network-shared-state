@@ -6,6 +6,35 @@ This repository provisions foundational AWS networking infrastructure (VPC, publ
 **The Problem Demonstrated:**
 In multi-repository OpenTofu/Terraform architectures, teams sometimes mistakenly configure multiple root modules to write to the exact same remote state file. Because OpenTofu treats the state file as a single root module's exclusive memory, running `tofu apply` from a second repository causes OpenTofu to view this network stack's resources as "deleted from code"—triggering destructive deletion races and state corruption.
 
+## Prerequisites (Remote State Backend)
+Before running `tofu init`, create the S3 state bucket and DynamoDB lock table in `ap-southeast-2`:
+
+1. **Create the S3 bucket (with versioning enabled):**
+~~~bash
+aws s3api create-bucket \
+  --bucket <YOUR-S3-BUCKET-NAME> \
+  --region ap-southeast-2 \
+  --create-bucket-configuration LocationConstraint=ap-southeast-2
+
+aws s3api put-bucket-versioning \
+  --bucket <YOUR-S3-BUCKET-NAME> \
+  --versioning-configuration Status=Enabled
+~~~
+2. **Create the DynamoDB lock table:**
+~~~bash
+aws dynamodb create-table \
+  --table-name tofu-lab-locks \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region ap-southeast-2
+~~~
+3. **Verify prerequisites:**
+~~~bash
+aws s3 ls s3://<YOUR-S3-BUCKET-NAME>
+aws dynamodb describe-table --table-name tofu-lab-locks --region ap-southeast-2 --query "Table.TableStatus"
+~~~
+
 ## Architecture & Shared State Key
 - **Region:** `ap-southeast-2`
 - **Backend Bucket:** `<YOUR-S3-BUCKET-NAME>`
@@ -13,12 +42,12 @@ In multi-repository OpenTofu/Terraform architectures, teams sometimes mistakenly
 - **Lock Table:** `tofu-lab-locks`
 
 ## How to Run (Step 1 of the Lab)
-1. Ensure your AWS SSO session is active (`aws sso login` and `export AWS_PROFILE=|YOUR-PROFILE>`).
+1. Ensure your AWS SSO session is active (`aws sso login` and `export AWS_PROFILE=<YOUR-PROFILE>`).
 2. Initialize and deploy the network layer first:
-   ```bash
-   tofu init
-   tofu apply
-   ```
+~~~bash
+tofu init
+tofu apply
+~~~
 3. **Verify Deployment:**
    - Run `tofu state list` — confirms 8 network resources (`aws_vpc.main`, 4 subnets, `aws_internet_gateway.igw`, route tables/associations) are tracked.
    - Run `tofu output` — confirms `vpc_id` and `public_subnet_ids` are exported into `shared-collision/terraform.tfstate`.
@@ -27,26 +56,26 @@ In multi-repository OpenTofu/Terraform architectures, teams sometimes mistakenly
 Once you run `tofu apply` in `tofu-aws-compute-shared-state` against this same state key:
 1. **Parallel Destruction Race:** OpenTofu attempts to destroy the 8 network resources while simultaneously creating the EC2 security group and instance inside them.
 2. **`DependencyViolation` Loop on `aws_vpc.main`:** Because `aws_security_group.ec2_sg` is created inside `vpc-xxxxxxxx` before the VPC finishes deleting, AWS rejects `DeleteVpc` with:
-   ```text
-   api error DependencyViolation: The vpc 'vpc-xxxxxxxx' has dependencies and cannot be deleted.
-   ```
+~~~text
+api error DependencyViolation: The vpc 'vpc-xxxxxxxx' has dependencies and cannot be deleted.
+~~~
 3. **State Overwrite & Output Loss:** Even after `aws_vpc.main` fails to delete, OpenTofu overwrites `shared-collision/terraform.tfstate` with the compute repo's state—wiping out `vpc_id` and `public_subnet_ids` and stranding `aws_vpc.main` in the state file without its subnets or IGW.
 
 ## How to Clean Up Stranded Resources
 Because the shared state file becomes corrupted after the collision, clean up using these steps:
-
-1. **Inspect remaining tracked resources (in `tofu-aws-compute-shared-state`)��   ```bash
-   tofu state list
-   ```
-2. **Remove leftover resources from OpenTofu state tracking:** 
-   ```bash
-   tofu state rm aws_security_group.ec2_sg aws_vpc.main
-   ```
+1. **Inspect remaining tracked resources (in `tofu-aws-compute-shared-state`):**
+~~~bash
+tofu state list
+~~~
+2. **Remove leftover resources from OpenTofu state tracking:**
+~~~bash
+tofu state rm aws_security_group.ec2_sg aws_vpc.main
+~~~
 3. **Delete the stranded Security Group and VPC in AWS (`ap-southeast-2`):**
-   ```bash
-   aws ec2 delete-security-group --group-id <SG-ID> --region ap-southeast-2
-   aws ec2 delete-vpc --vpc-id <VPC-ID> --region ap-southeast-2
-   ```
+~~~bash
+aws ec2 delete-security-group --group-id <SG-ID> --region ap-southeast-2
+aws ec2 delete-vpc --vpc-id <VPC-ID> --region ap-southeast-2
+~~~
 4. **Verify Complete Cleanup:**
    - Run `tofu state list` — returns zero managed resources.
    - Run `aws ec2 describe-vpcs --region ap-southeast-2` — confirms the lab VPC no longer exists.
