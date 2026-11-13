@@ -1,0 +1,22 @@
+# Local OpenTofu / Terraform directories
+**/.terraform/*
+
+# Local state files (state lives in S3, never in Git)
+*.tfstate
+*.tfstate.*
+
+# Crash logs and override files
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI configuration, variable overrides, and plan files
+.terraformrc
+terraform.rc
+*.tfvars
+*.tfvars.json
+*.tfplan
+.DS_Store
